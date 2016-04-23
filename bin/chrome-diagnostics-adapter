@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+
+var http = require('http');
+var url = require('url');
+var ws = require('ws');
+var launch = require('chrome-launch');
+
+var options = parse(process.argv.slice(2));
+
+if (options.launch) {
+  var browser = launch(options.launch, {
+    args: [
+      '--remote-debugging-port=' + options.listen,
+      '--user-data-dir=' + '.' + options.listen,
+    ],
+  });
+}
+
+var server = http.createServer();
+server.on('request', function(request, response) {
+  var upstreamRequest = http.request({
+    host: options.host,
+    port: options.listen,
+    path: request.url,
+  });
+
+  var address = server.address();
+  upstreamRequest.on('response', function(upstreamResponse) {
+    if (request.url === '/json' || request.url === '/json/list') {
+      var data = '';
+
+      upstreamResponse.on('data', function(chunk) {
+        data += chunk;
+      });
+
+      upstreamResponse.on('end', function() {
+        var targets = JSON.parse(data);
+        targets.forEach(function(target) {
+          var keys = Object.keys(socket.connections);
+
+          var webSocketDebuggerUrl = keys.filter(function(key) {
+            return key.search(target.id);
+          })[0];
+
+          if (target.webSocketDebuggerUrl || webSocketDebuggerUrl) {
+            target.webSocketDebuggerUrl = url.format({
+              protocol: 'ws',
+              slashes: true,
+              port: address.port,
+              hostname: 'localhost',
+              pathname: '/devtools/page/' + target.id,
+            });
+          }
+
+          if (target.webSocketDebuggerUrl) {
+            target.devtoolsFrontEndUrl = '/devtools/inspector.html?ws=' +
+              target.webSocketDebuggerUrl.slice(5);
+          }
+        });
+
+        response.end(JSON.stringify(targets, null, 2));
+      });
+
+    } else {
+      upstreamResponse.pipe(response);
+    }
+  });
+
+  upstreamRequest.end();
+});
+
+var socket = ws.createServer({
+  server: server
+});
+
+socket.connections = {};
+
+socket.on('connection', function(connection) {
+  var upstreamConnection = socket.connections[connection.upgradeReq.url];
+  if (upstreamConnection) {
+    upstreamConnection.connections.push(connection);
+  } else {
+    var connectionURL = url.parse(connection.upgradeReq.url, true);
+    connectionURL.protocol = 'ws';
+    connectionURL.slashes = true;
+    connectionURL.port = options.listen;
+    connectionURL.hostname = options.host;
+
+    upstreamConnection = ws.connect(url.format(connectionURL));
+    upstreamConnection.connections = [
+      connection,
+    ];
+
+    upstreamConnection.requests = {};
+    upstreamConnection.requestId = 0;
+
+    upstreamConnection.events = [];
+    upstreamConnection.on('message', function(data) {
+      var response = JSON.parse(data);
+      var request = upstreamConnection.requests[response.id];
+      if (request) {
+        var enable = /^(.*)\.enable/.exec(request.method);
+        if (enable) {
+          request.connection.domains.push(enable[1]);
+
+          upstreamConnection.events.forEach(function(event) {
+            var domain = /^(.*)\./.exec(event.method)[1];
+            if (enable[1] !== domain) {
+              return;
+            }
+
+            request.connection.send(JSON.stringify(event));
+          });
+        }
+
+        var disable = /^(.*)\.disable/.exec(request.method);
+        if (disable) {
+          var index = request.connection.domains.indexOf(disable[1]);
+          request.connection.domains.slice(index, 1);
+        }
+
+        request.connection.send(JSON.stringify({
+          id: request.id,
+          error: response.error,
+          result: response.result,
+        }));
+      } else {
+        var method = /^(.*)\.(.*)/.exec(response.method);
+        var domain = method[1];
+        var name = method[2];
+
+        upstreamConnection.events.push(response);
+        upstreamConnection.connections.forEach(function(connection) {
+          if (connection.domains.indexOf(domain) > -1) {
+            connection.send(JSON.stringify(response));
+          }
+        });
+      }
+    });
+
+    upstreamConnection.on('close', function() {
+      upstreamConnection.connections.forEach(function(connection) {
+        connection.close();
+      });
+
+      delete socket.connections[connection.upgradeReq.url];
+    });
+  }
+
+  connection.domains = [];
+  connection.on('message', function(data) {
+    var request = JSON.parse(data);
+    var id = upstreamConnection.requestId++;
+
+    upstreamConnection.requests[id] = {
+      id: request.id,
+      method: request.method,
+      params: request.params,
+      connection: connection,
+    };
+
+    if (upstreamConnection.readyState === 0) { 
+      upstreamConnection.once('open', function() {
+        upstreamConnection.send(JSON.stringify({
+          id: id,
+          method: request.method,
+          params: request.params,
+        }));
+      });
+    } else {
+      upstreamConnection.send(JSON.stringify({
+        id: id,
+        method: request.method,
+        params: request.params,
+      }));
+    }
+  });
+
+  connection.on('close', function() {
+    var index = upstreamConnection.connections.indexOf(connection);
+    upstreamConnection.connections.splice(index, 1);
+
+    if (upstreamConnection.connections.length === 0) {
+      upstreamConnection.close();
+    }
+  });
+});
+
+server.listen(options.port);
+
+function parse(argv) {
+  return argv.reduce(function(options, value, index, argv) {
+    if (/^(-l|--launch)/.test(value)) {
+      options.launch = String(argv[index + 1]);
+    }
+
+    if (/^(-p|--port)/.test(value)) {
+      options.port = Number(argv[index + 1]);
+    }
+
+    if (/^(--listen)/.test(value)) {
+      options.listen = Number(argv[index + 1]);
+    }
+
+    return options;
+  }, {
+    port: 9222,
+    host: 'localhost',
+    listen: 9223,
+  });
+}
