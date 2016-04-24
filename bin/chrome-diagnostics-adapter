@@ -53,7 +53,7 @@ server.on('request', function(request, response) {
           }
 
           if (target.webSocketDebuggerUrl) {
-            target.devtoolsFrontEndUrl = '/devtools/inspector.html?ws=' +
+            target.devtoolsFrontendUrl = '/devtools/inspector.html?ws=' +
               target.webSocketDebuggerUrl.slice(5);
           }
         });
@@ -95,6 +95,11 @@ socket.on('connection', function(connection) {
     upstreamConnection.requestId = 0;
 
     upstreamConnection.events = [];
+
+    upstreamConnection.on('open', function() {
+      socket.connections[connection.upgradeReq.url] = upstreamConnection;
+    });
+
     upstreamConnection.on('message', function(data) {
       var response = JSON.parse(data);
       var request = upstreamConnection.requests[response.id];
