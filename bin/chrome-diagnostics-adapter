@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 var http = require('http');
-var url = require('url');
-var ws = require('ws');
 var launch = require('chrome-launch');
+var urlformat = require('url').format;
+var urlparse = require('url').parse;
+var ws = require('ws');
 
 var options = parse(process.argv.slice(2));
 
@@ -37,13 +38,12 @@ server.on('request', function(request, response) {
         var targets = JSON.parse(data);
         targets.forEach(function(target) {
           var keys = Object.keys(socket.connections);
-
           var webSocketDebuggerUrl = keys.filter(function(key) {
             return key.search(target.id);
           })[0];
 
           if (target.webSocketDebuggerUrl || webSocketDebuggerUrl) {
-            target.webSocketDebuggerUrl = url.format({
+            target.webSocketDebuggerUrl = urlformat({
               protocol: 'ws',
               slashes: true,
               port: address.port,
@@ -80,13 +80,13 @@ socket.on('connection', function(connection) {
   if (upstreamConnection) {
     upstreamConnection.connections.push(connection);
   } else {
-    var connectionURL = url.parse(connection.upgradeReq.url, true);
+    var connectionURL = urlparse(connection.upgradeReq.url, true);
     connectionURL.protocol = 'ws';
     connectionURL.slashes = true;
     connectionURL.port = options.listen;
     connectionURL.hostname = options.host;
 
-    upstreamConnection = ws.connect(url.format(connectionURL));
+    upstreamConnection = ws.connect(urlformat(connectionURL));
     upstreamConnection.connections = [
       connection,
     ];
