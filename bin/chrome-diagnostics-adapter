@@ -130,13 +130,33 @@ socket.on('connection', function(connection) {
           result: response.result,
         }));
       } else {
-        var method = /^(.*)\.(.*)/.exec(response.method);
-        var domain = method[1];
-        var name = method[2];
+        var events = upstreamConnection.events;
+
+        if (/Console.messagesCleared/.test(response.method)) {
+          events = events.filter(function(event) {
+            return /^(Console)\./.test(event.method) == false;
+          });
+        }
+
+        if (/DOM.documentUpdate/.test(response.method)) {
+          events = events.filter(function(event) {
+            return /^(DOM|CSS)\./.test(event.method) == false;
+          });
+        }
+
+        if (/Debugger.globalObjectCleared/.test(response.method)) {
+          events = events.filter(function(event) {
+            return /^(Debugger|DOM|Runtime)\./.test(event.method) == false;
+          });
+        }
+
+        upstreamConnection.events = events;
 
         upstreamConnection.events.push(response);
         upstreamConnection.connections.forEach(function(connection) {
-          if (connection.domains.indexOf(domain) > -1) {
+          var method = /^(.*)\./.exec(response.method);
+
+          if (connection.domains.indexOf(method[1]) > -1) {
             connection.send(JSON.stringify(response));
           }
         });
